@@ -1,7 +1,7 @@
 package InputHandler;
 
-my $UCD_XML = "ucd.nounihan.grouped.xml";
 my $UCD_DIR = "UCD-6.0.0";
+my $UCD_XML = "$UCD_DIR/ucd.nounihan.grouped.xml";
 
 use 5.010;
 use strict;
@@ -13,7 +13,7 @@ use File::Slurp;
 use Encode;
 use XML::SAX;
 
-my @PropertyAliases = read_file("$UCD_DIR/PropertyAliases.txt");
+my @PropertyAliases;
 
 sub start_document {
     my ($self, $e) = @_;
@@ -260,8 +260,12 @@ sub end_document {
     $self->_add_file('!emoji-sources', '_', $self->{emoji_source});
     $self->_add_file('!PropertyAlias', '_', $cooked_pa);
 
-    print $self->{'header'};
-    print $_ for @{ $self->{'files'} };
+    open my $out, ">", "unidata" or die "open: $!";
+    binmode $out;
+    for ($self->{'header'}, @{ $self->{'files'} }) {
+        print $out $_ or die "write: $!";
+    }
+    close $out or die "close: $!";
 }
 
 sub _mong_attrs {
@@ -385,6 +389,32 @@ sub characters {
         $self->{description} .= $e->{Data};
     }
 }
+
+package main;
+
+use LWP::Simple;
+use Archive::Extract;
+use File::Slurp;
+
+mkdir $UCD_DIR;
+
+sub domirrror {
+    my ($url) = @_;
+    $url =~ m|.*/(.*)|;
+    my $last = $1;
+
+    my $stat = mirror($url, $last);
+    die "cannot mirror $last: $stat"
+        unless $stat == RC_OK || $stat == RC_NOT_MODIFIED;
+
+    my $ae = Archive::Extract->new(archive => $last);
+    $ae->extract(to => $UCD_DIR) or die $ae->error;
+}
+
+domirrror "http://www.unicode.org/Public/6.0.0/ucdxml/ucd.nounihan.grouped.zip";
+domirrror "http://www.unicode.org/Public/zipped/6.0.0/UCD.zip";
+
+@PropertyAliases = read_file("$UCD_DIR/PropertyAliases.txt");
 
 XML::SAX::ParserFactory->parser(Handler => InputHandler->new)
     ->parse_uri($UCD_XML);
