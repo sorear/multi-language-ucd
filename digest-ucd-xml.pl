@@ -38,7 +38,7 @@ sub start_document {
 sub _add_file {
     my ($self, $name, @buf) = @_;
 
-    $self->{'header'} .= pack "Z*Z*cN*", $name, scalar(@buf),
+    $self->{'header'} .= pack "Z*cN*", $name, scalar(@buf),
         map { length } @buf;
 
     for (my $i = 0; $i < @buf; $i++) {
@@ -314,6 +314,8 @@ sub end_document {
 
     open my $out, ">", "unidata" or die "open: $!";
     binmode $out;
+    $self->{'header'} = pack("NNNNN", length($self->{header}),
+        map { length } @{ $self->{'files'} }) . $self->{header};
     for ($self->{'header'}, @{ $self->{'files'} }) {
         print $out $_ or die "write: $!";
     }
