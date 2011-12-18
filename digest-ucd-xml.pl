@@ -50,6 +50,52 @@ sub _add_file {
     print STDERR "add $name, code $buf[0], ", join("+",map { length } @buf), " (tot $tot) bytes.\n";
 }
 
+sub parse_name_alias {
+    my $self = shift;
+    my @tbl;
+    my %stats; $stats{''} = 1;
+    for my $l (read_file "$UCD_DIR/NameAliases.txt") {
+        next if $l =~ /^#/;
+        next unless $l =~ /;/;
+        my ($lhs,$rhs) = split ';', $l;
+        if (@tbl && $tbl[-2] == hex($lhs)) {
+            splice @tbl, (@tbl - 2), 2;
+        }
+        $stats{$rhs}=1;
+        push @tbl, hex($lhs), $rhs, hex($lhs)+1, "";
+    }
+    $self->{tables}{Name_Alias} = \@tbl;
+    $self->{stats}{Name_Alias} = \%stats;
+}
+
+sub parse_script_ext {
+    my $self = shift;
+    my @tbl;
+    my %stats; $stats{''} = 1;
+    my @offside;
+    for my $l (read_file "$UCD_DIR/ScriptExtensions.txt") {
+        my ($codes, $exten) = $l =~ /^([^;]+);([^#]+)/ or next;
+        $codes =~ s/^\s*//;
+        $exten =~ s/^\s*//;
+        $codes =~ s/\s*$//;
+        $exten =~ s/\s*$//;
+        my ($fcode, $lcode) = ($codes =~ /(.*)\.\.(.*)/) ? (hex($1), hex($2))
+            : (hex($codes), hex($codes));
+        push @offside, pack("NN",$fcode,$lcode) . $exten;
+    }
+    for my $e (sort @offside) {
+        my ($fcode,$lcode) = unpack "NN", $e;
+        my $exten = substr($e,8);
+        if (@tbl && $tbl[-2] == $fcode) {
+            splice @tbl, (@tbl - 2), 2;
+        }
+        $stats{$exten} = 1;
+        push @tbl, $fcode, $exten, $lcode+1, "";
+    }
+    $self->{tables}{scx} = \@tbl;
+    $self->{stats}{scx} = \%stats;
+}
+
 sub collect_tokens {
     my ($self) = @_;
 
@@ -60,6 +106,10 @@ sub collect_tokens {
         push @tx, split /\s+/, $t->[$i+1];
     }
     $t = $self->{tables}{na1};
+    for (my $i = 0; $i < @$t; $i += 2) {
+        push @tx, split /\s+/, $t->[$i+1];
+    }
+    $t = $self->{tables}{Name_Alias};
     for (my $i = 0; $i < @$t; $i += 2) {
         push @tx, split /\s+/, $t->[$i+1];
     }
@@ -102,7 +152,7 @@ sub format_table {
 
     #write_file("raw.$name", join "\n", @$t, "");
 
-    if ($name eq 'na' || $name eq 'na1') {
+    if ($name eq 'na' || $name eq 'na1' || $name eq 'Name_Alias') {
         @buf = ('N', '');
         my $prev = -1;
         my @last;
@@ -218,6 +268,8 @@ sub end_document {
     my ($self, $e) = @_;
     print STDERR "\n";
 
+    $self->parse_name_alias;
+    $self->parse_script_ext;
     $self->collect_tokens;
 
     my $cooked_pa = '';
@@ -227,7 +279,6 @@ sub end_document {
             my @arr = split /;/, $line;
             s/\s//g for @arr;
             next if $arr[0] =~ /cjk/;
-            next if $arr[0] eq 'Name_Alias'; # XXX not in the XML data
             $self->format_table($arr[0], $type);
 
             $cooked_pa .= pack "Z*", $_ for @arr;
@@ -237,6 +288,7 @@ sub end_document {
             $type = $1;
         }
     }
+    $self->format_table('scx', 'Miscellaneous');
 
     for my $t (qw/ named_seq p_named_seq /) {
         my $lst = $self->{$t};
