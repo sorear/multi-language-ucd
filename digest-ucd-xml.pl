@@ -13,8 +13,6 @@ use File::Slurp;
 use Encode;
 use XML::SAX;
 
-my @PropertyAliases;
-
 sub start_document {
     my ($self, $e) = @_;
 
@@ -55,9 +53,7 @@ sub parse_name_alias {
     my @tbl;
     my %stats; $stats{''} = 1;
     for my $l (read_file "$UCD_DIR/NameAliases.txt") {
-        next if $l =~ /^#/;
-        next unless $l =~ /;/;
-        my ($lhs,$rhs) = split ';', $l;
+        my ($lhs,$rhs) = parse_ucd_line($l) or next;
         if (@tbl && $tbl[-2] == hex($lhs)) {
             splice @tbl, (@tbl - 2), 2;
         }
@@ -74,11 +70,7 @@ sub parse_script_ext {
     my %stats; $stats{''} = 1;
     my @offside;
     for my $l (read_file "$UCD_DIR/ScriptExtensions.txt") {
-        my ($codes, $exten) = $l =~ /^([^;]+);([^#]+)/ or next;
-        $codes =~ s/^\s*//;
-        $exten =~ s/^\s*//;
-        $codes =~ s/\s*$//;
-        $exten =~ s/\s*$//;
+        my ($codes, $exten) = parse_ucd_line($l) or next;
         my ($fcode, $lcode) = ($codes =~ /(.*)\.\.(.*)/) ? (hex($1), hex($2))
             : (hex($codes), hex($codes));
         push @offside, pack("NN",$fcode,$lcode) . $exten;
@@ -94,6 +86,20 @@ sub parse_script_ext {
     }
     $self->{tables}{scx} = \@tbl;
     $self->{stats}{scx} = \%stats;
+}
+
+sub parse_pva {
+    my $self = shift;
+
+    my $buf = '';
+    for my $l (read_file "$UCD_DIR/PropertyValueAliases.txt") {
+        my @toks = parse_ucd_line($l) or next;
+
+        $buf .= pack "Z*", $_ for @toks;
+        $buf .= "\0";
+    }
+
+    $self->_add_file('!pva', '_', $buf);
 }
 
 sub collect_tokens {
@@ -264,29 +270,37 @@ sub format_table {
     $self->_add_file($name, @buf);
 }
 
+sub parse_ucd_line {
+    my $str = $_[0];
+    Carp::confess("wtf") unless defined $str;
+    $str =~ s/\s*#.*//;
+    return () unless $str =~ /;/;
+    my @fields = split ';', $str;
+    for (@fields) { s/^\s+//; s/\s+$// }
+    @fields;
+}
+
 sub end_document {
     my ($self, $e) = @_;
     print STDERR "\n";
 
     $self->parse_name_alias;
     $self->parse_script_ext;
+    $self->parse_pva;
     $self->collect_tokens;
 
     my $cooked_pa = '';
     my $type = '';
-    for my $line (@PropertyAliases) {
-        if ($line =~ /^\w/) {
-            my @arr = split /;/, $line;
-            s/\s//g for @arr;
-            next if $arr[0] =~ /cjk/;
-            $self->format_table($arr[0], $type);
-
-            $cooked_pa .= pack "Z*", $_ for @arr;
-            $cooked_pa .= "\0";
-        }
-        elsif ($line =~ /(\w+) Properties/) {
+    for my $line (read_file "$UCD_DIR/PropertyAliases.txt") {
+        if ($line =~ /(\w+) Properties/) {
             $type = $1;
         }
+        my @arr = parse_ucd_line($line) or next;
+        next if $arr[0] =~ /cjk/;
+        $self->format_table($arr[0], $type);
+
+        $cooked_pa .= pack "Z*", $_ for @arr;
+        $cooked_pa .= "\0";
     }
     $self->format_table('scx', 'Miscellaneous');
 
@@ -467,8 +481,6 @@ sub domirrror {
 
 domirrror "http://www.unicode.org/Public/6.0.0/ucdxml/ucd.nounihan.grouped.zip";
 domirrror "http://www.unicode.org/Public/zipped/6.0.0/UCD.zip";
-
-@PropertyAliases = read_file("$UCD_DIR/PropertyAliases.txt");
 
 XML::SAX::ParserFactory->parser(Handler => InputHandler->new)
     ->parse_uri($UCD_XML);
