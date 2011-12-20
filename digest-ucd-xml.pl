@@ -171,7 +171,7 @@ sub format_table {
             }
 
             if ($t->[$i] != $prev + 1) {
-                $buf[1] .= "\0" . pack "w", $t->[$i] - $prev - 1;
+                $buf[1] .= "\377" . pack "w", $t->[$i] - $prev - 1;
             }
             $prev = $t->[$i];
 
