@@ -1,6 +1,6 @@
 package InputHandler;
 
-my $UCD_DIR = "UCD-6.0.0";
+my $UCD_DIR = "UCD-6.1.0";
 my $UCD_XML = "$UCD_DIR/ucd.nounihan.grouped.xml";
 
 use 5.010;
@@ -48,46 +48,6 @@ sub _add_file {
     print STDERR "add $name, code $buf[0], ", join("+",map { length } @buf), " (tot $tot) bytes.\n";
 }
 
-sub parse_name_alias {
-    my $self = shift;
-    my @tbl;
-    my %stats; $stats{''} = 1;
-    for my $l (read_file "$UCD_DIR/NameAliases.txt") {
-        my ($lhs,$rhs) = parse_ucd_line($l) or next;
-        if (@tbl && $tbl[-2] == hex($lhs)) {
-            splice @tbl, (@tbl - 2), 2;
-        }
-        $stats{$rhs}=1;
-        push @tbl, hex($lhs), $rhs, hex($lhs)+1, "";
-    }
-    $self->{tables}{Name_Alias} = \@tbl;
-    $self->{stats}{Name_Alias} = \%stats;
-}
-
-sub parse_script_ext {
-    my $self = shift;
-    my @tbl;
-    my %stats; $stats{''} = 1;
-    my @offside;
-    for my $l (read_file "$UCD_DIR/ScriptExtensions.txt") {
-        my ($codes, $exten) = parse_ucd_line($l) or next;
-        my ($fcode, $lcode) = ($codes =~ /(.*)\.\.(.*)/) ? (hex($1), hex($2))
-            : (hex($codes), hex($codes));
-        push @offside, pack("NN",$fcode,$lcode) . $exten;
-    }
-    for my $e (sort @offside) {
-        my ($fcode,$lcode) = unpack "NN", $e;
-        my $exten = substr($e,8);
-        if (@tbl && $tbl[-2] == $fcode) {
-            splice @tbl, (@tbl - 2), 2;
-        }
-        $stats{$exten} = 1;
-        push @tbl, $fcode, $exten, $lcode+1, "";
-    }
-    $self->{tables}{scx} = \@tbl;
-    $self->{stats}{scx} = \%stats;
-}
-
 sub parse_pva {
     my $self = shift;
 
@@ -112,10 +72,6 @@ sub collect_tokens {
         push @tx, split /\s+/, $t->[$i+1];
     }
     $t = $self->{tables}{na1};
-    for (my $i = 0; $i < @$t; $i += 2) {
-        push @tx, split /\s+/, $t->[$i+1];
-    }
-    $t = $self->{tables}{Name_Alias};
     for (my $i = 0; $i < @$t; $i += 2) {
         push @tx, split /\s+/, $t->[$i+1];
     }
@@ -284,8 +240,6 @@ sub end_document {
     my ($self, $e) = @_;
     print STDERR "\n";
 
-    $self->parse_name_alias;
-    $self->parse_script_ext;
     $self->parse_pva;
     $self->collect_tokens;
 
@@ -297,12 +251,12 @@ sub end_document {
         }
         my @arr = parse_ucd_line($line) or next;
         next if $arr[0] =~ /cjk/;
+        next if $arr[0] eq 'Name_Alias'; # anomalous multivalue prop
         $self->format_table($arr[0], $type);
 
         $cooked_pa .= pack "Z*", $_ for @arr;
         $cooked_pa .= "\0";
     }
-    $self->format_table('scx', 'Miscellaneous');
 
     for my $t (qw/ named_seq p_named_seq /) {
         my $lst = $self->{$t};
@@ -322,6 +276,7 @@ sub end_document {
 
     $self->_add_file('!normalization-corrections', '_', $self->{normalization_correction});
     $self->_add_file('!standardized-variants', '_', $self->{standardized_variant});
+    $self->_add_file('!name-alias', '_', $self->{name_alias}, $self->{name_alias_types});
     $self->_add_file('!cjk-radicals', '_', $self->{cjk_radical});
     $self->_add_file('!emoji-sources', '_', $self->{emoji_source});
     $self->_add_file('!PropertyAlias', '_', $cooked_pa);
@@ -390,17 +345,6 @@ sub start_element {
             }
         }
     }
-    elsif ($n eq 'block') {
-        my $t = ($self->{tables}{blk} //= []);
-        my $a = _mong_attrs({}, $e->{Attributes});
-
-        if (@$t && $t->[-2] == hex($a->{'first-cp'})) {
-            pop @$t; pop @$t;
-        }
-        $self->{stats}{blk}{$a->{name}}++;
-        push @$t, hex($a->{'first-cp'}), $a->{'name'},
-            hex($a->{'last-cp'})+1, '';
-    }
     elsif ($n eq 'named-sequence') {
         my $a = _mong_attrs({}, $e->{Attributes});
         push @{ $self->{inprov} ? $self->{p_named_seq} : $self->{named_seq} },
@@ -425,6 +369,17 @@ sub start_element {
         $a->{number} =~ /(\d+)('?)/;
         $self->{cjk_radical} .= pack "nnn", ($2 ? 1024 : 0) + $1,
             hex($a->{radical}), hex($a->{ideograph});
+    }
+    elsif ($n eq 'name-alias') {
+        my $a = _mong_attrs({}, $e->{Attributes});
+        my $h = ($self->{name_alias_types_map} //= {});
+        my $t = $h->{$a->{type}};
+        unless (defined($t)) {
+            $self->{name_alias_types} .= pack "Z*", $a->{type};
+            $t = $h->{$a->{type}} = keys %$h;
+        }
+        $self->{name_alias} .= pack "NZ*", $self->{last} + ($t << 24),
+            $a->{alias};
     }
     elsif ($n eq 'emoji-source') {
         my $a = _mong_attrs({}, $e->{Attributes});
@@ -479,8 +434,8 @@ sub domirrror {
     $ae->extract(to => $UCD_DIR) or die $ae->error;
 }
 
-domirrror "http://www.unicode.org/Public/6.0.0/ucdxml/ucd.nounihan.grouped.zip";
-domirrror "http://www.unicode.org/Public/zipped/6.0.0/UCD.zip";
+domirrror "http://www.unicode.org/Public/6.1.0/ucdxml/ucd.nounihan.grouped.zip";
+domirrror "http://www.unicode.org/Public/zipped/6.1.0/UCD.zip";
 
 XML::SAX::ParserFactory->parser(Handler => InputHandler->new)
     ->parse_uri($UCD_XML);
